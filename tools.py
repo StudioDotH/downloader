@@ -2,6 +2,8 @@
 """
 import json
 import os
+import re
+import sys
 import string
 import logging
 import random
@@ -19,6 +21,9 @@ BLOCK_SIZE = 8192
 MIN_DIV_SIZE = 100*(2**20)
 MAX_THREAD = 8
 CHARS = string.ascii_lowercase + string.digits
+
+WINDOWS_FORBIDDEN_CHARS = ['<', '>', ':', '\\', '/', '|', '*', '?']
+LINUX_FORBIDDEN_CHARS = ['/']
 
 def random_string(size=12):
     """Creates a random string of lowercase alphabets and numbers
@@ -52,10 +57,7 @@ def readable_filesize(size):
     while size >= 1000:
         unit_index += 1
         size /= 1024.0
-    if unit_index == 0:
-        return "%.0f%s" % (size, SIZE_UNITS[unit_index])
-    else:
-        return "%.1f%s" % (size, SIZE_UNITS[unit_index])
+    return ("%.0f%s" if unit_index == 0 else "%.1f%s") % (size, SIZE_UNITS[unit_index])
 
 
 def time_string(seconds, short=False):
@@ -134,7 +136,8 @@ def divide_range(filesize, min_size=MIN_DIV_SIZE, max_threads=MAX_THREAD):
     return ret
 
 def check_httpfile_info(url, timeout=15):
-    """Check if the server accepts range requests, and get content length.
+    """Check if the server accepts range requests, and get content length, and file name.
+    The file name is determined by the url and Content-Disposition. If the name cannot be determined, None will be returned
 
     Arguments:
         url {str} -- Url of file to check.
@@ -145,6 +148,7 @@ def check_httpfile_info(url, timeout=15):
     Returns:
         bool -- Whether the server accepts range requests.
         int -- Content length.
+        str -- Filename
     """
     req = requests.head(url, headers={
         'User-Agent': random_useragent(),
@@ -157,7 +161,12 @@ def check_httpfile_info(url, timeout=15):
         content_length = int(req.headers['Content-Range'].split('/')[-1])
     else:
         content_length = int(req.headers['Content-Length'])
-    return accept_range, content_length
+    filename = ''
+    if 'Content-Disposition' in req.headers:
+        filename = re.findall("filename=(.+)", req.headers['Content-Disposition'])[0]
+    if filename == '':
+        filename = url[url.rfind('/')+1:]
+    return accept_range, content_length, filename
 
 def merge_files(dest):
     """Merge files with the given name
@@ -166,15 +175,13 @@ def merge_files(dest):
         dest {str} -- File
     """
     filename = os.path.basename(dest)
+    folder = os.path.dirname(dest)
     files = []
-    for file in os.listdir():
-        if not os.path.isfile(file):
+    for file in os.listdir(folder):
+        if len(file) < 15:
             continue
-        filename_cmp = os.path.basename(file)
-        if len(filename_cmp) < 15:
-            continue
-        if filename_cmp[:-15] == filename:
-            files.append(file)
+        if file[:-15] == filename:
+            files.append('%s/%s' % (folder, file))
     files = sorted(files)
     with open(dest, 'wb') as newfile:
         for file in files:
@@ -184,6 +191,31 @@ def merge_files(dest):
                     newfile.write(data)
                     data = dfile.read(BLOCK_SIZE)
             os.remove(file)
+
+def non_conflicting_filename(filename: str, replace_char=''):
+    if sys.platform == "win32":
+        forbidden_chars = WINDOWS_FORBIDDEN_CHARS
+    else:
+        forbidden_chars = LINUX_FORBIDDEN_CHARS
+    for char in forbidden_chars:
+        filename = filename.replace(char, replace_char)
+    return filename
+
+def non_matching_filename(path: str):
+    path = os.path.abspath(path)
+
+    if not os.path.exists(path):
+        return path
+    filename = os.path.basename(path)
+    directory = os.path.dirname(path)
+
+    if filename.rfind('.') == -1:
+        name, ext = filename, ''
+    else:
+        ind = filename.rfind('.')
+        name, ext = filename[:-ind], '.'+filename[ind:]
+    return '%s/%s-%s%s' % (directory, name, random_string(8), ext)
+
 
 class BasicLogger(object):
     """A basic logger class, same as logging module.
@@ -213,8 +245,8 @@ class BasicLogger(object):
 class PoolManager(object):
     """Pool Manager using concurrent.futures.ThreadPoolExecutor.
     """
-    def __init__(self):
-        self.worker = concurrent.futures.ThreadPoolExecutor()
+    def __init__(self, max_workers=None):
+        self.worker = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
         self.works = []
     def add_pool(self, func, *args, **kwargs):
         """Add a work to the pool

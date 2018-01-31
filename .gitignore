@@ -1,2 +1,6 @@
 .vscode/*
 .DS_store
+test*
+Downloads/*
+json.json
+__pycache__/*

@@ -7,7 +7,7 @@ import tools
 
 BLOCK_SIZE = 8192
 
-class Downloader(object):
+class Downloader:
     """Main downloader class
     """
     def __init__(self, logger=None):
@@ -18,37 +18,45 @@ class Downloader(object):
         self.working = False
         self.thread_pool = tools.PoolManager()
 
-    def download(self, url, dest):
+    def download(self, url, dest_folder, filename=None, determine_filename=False):
         if self.working:
             self.logger.error('Downloader is busy.')
             return
         self.working = True
 
-        dest = os.path.abspath(dest)
-        if not os.path.exists(os.path.dirname(dest)):
-            self.logger.warning('dest path does not exist')
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
+        dest_folder = os.path.abspath(dest_folder)
+        if not os.path.exists(os.path.dirname(dest_folder)):
+            self.logger.warning('Destination path does not exist')
+            os.makedirs(os.path.dirname(dest_folder), exist_ok=True)
 
-        accepts_range, filesize = tools.check_httpfile_info(url)
+        self.logger.info("Retrieving file metadata..")
+        accepts_range, filesize, srv_filename = tools.check_httpfile_info(url)
         if accepts_range:
             ranges = tools.divide_range(filesize)
         else:
             ranges = tools.divide_range(filesize, max_threads=1)
+        if dest_folder[-1] != '/':
+            dest_folder = dest_folder+'/'
+        dest = '%s%s' % (dest_folder, srv_filename if determine_filename else filename)
 
-        for ran in ranges:
-            self.thread_pool.add_pool(self.download_thread, url, dest, ran[0], ran[1])
-        # self.thread_pool.wait_all()
-        prev_size = 0
-        while not self.thread_pool.iscomplete():
-            time.sleep(1)
-            pgsb = tools.progress_bar(self.downloaded_size / filesize, 40, \
-                                      self.downloaded_size, True)
-            print('%s %s/s' % (pgsb, tools.readable_filesize(self.downloaded_size - prev_size)))
-            prev_size = self.downloaded_size
+        if len(ranges) == 1:
+            self.download_thread(url, dest, ranges[0][0], ranges[0][1], single_thread=True)
+        else:
+            for ran in ranges:
+                self.thread_pool.add_pool(self.download_thread, url, dest, ran[0], ran[1])
+            # self.thread_pool.wait_all()
+            prev_size = 0
+            while not self.thread_pool.iscomplete():
+                time.sleep(1)
+                pgsb = tools.progress_bar(self.downloaded_size / filesize, 40, \
+                                        self.downloaded_size, True)
+                print('%s %s/s' % (pgsb, tools.readable_filesize(self.downloaded_size - prev_size)))
+                prev_size = self.downloaded_size
+            tools.merge_files(dest)
+            
+        self.working = False
 
-        tools.merge_files(dest)
-
-    def download_thread(self, url, dest, start_byte=0, end_byte=-1, headers=None, timeout=10000):
+    def download_thread(self, url, dest, start_byte=0, end_byte=-1, headers=None, timeout=10000, single_thread=False):
         self.logger.info('Starting download.')
 
         if not headers:
@@ -60,8 +68,9 @@ class Downloader(object):
         else:
             headers['Range'] = 'bytes=%d-%d' % (start_byte, end_byte)
 
-        dest = os.path.abspath(dest)
-        dest += '.%014d' % start_byte
+        if not single_thread:
+            dest = os.path.abspath(dest)
+            dest += '.%014d' % start_byte
         filename = os.path.basename(dest)
         self.logger.info('Downloading %s to %s' % (url, filename))
 

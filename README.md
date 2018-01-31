@@ -1,0 +1,1 @@
+[![Maintainability](https://api.codeclimate.com/v1/badges/d7d3595f26cdc3c56d74/maintainability)](https://codeclimate.com/github/StudioDotH/downloader/maintainability)
